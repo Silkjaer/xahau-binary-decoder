@@ -1,0 +1,55 @@
+{
+  "name": "xahau-binary-decoder",
+  "version": "0.1.0",
+  "description": "Fast binary decoder for Xahau ledger data",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "napi": {
+    "name": "xahau-decoder",
+    "triples": {
+      "defaults": true,
+      "additional": [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin"
+      ]
+    }
+  },
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "prepublishOnly": "napi prepublish -t npm",
+    "postinstall": "npx napi build --platform --release || echo '⚠️  Build failed. Make sure Rust is installed: https://rustup.rs/'"
+  },
+  "dependencies": {
+    "@napi-rs/cli": "^2.18.0"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "definitions.json",
+    "*.node"
+  ],
+  "keywords": [
+    "xahau",
+    "xrpl",
+    "binary",
+    "decoder",
+    "blockchain",
+    "native"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Silkjaer/xahau-binary-decoder.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Silkjaer/xahau-binary-decoder/issues"
+  },
+  "homepage": "https://github.com/Silkjaer/xahau-binary-decoder#readme"
+}

@@ -1,0 +1,23 @@
+# Rust build artifacts
+/target/
+
+# Source files (only needed for development)
+/src/
+/build.rs
+Cargo.toml
+Cargo.lock
+
+# Test files
+test.js
+
+# Development files
+.gitignore
+.npmignore
+
+# IDE
+.idea/
+*.swp
+
+# OS
+.DS_Store
+

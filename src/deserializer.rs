@@ -343,6 +343,13 @@ impl Deserializer {
                 Ok(json!(encode_account_id(bytes)))
             }
 
+            // Number (STNumber): 8-byte signed mantissa + 4-byte signed exponent (big-endian)
+            9 => {
+                let mantissa = reader.read_u64_be()? as i64;
+                let exponent = reader.read_u32_be()? as i32;
+                Ok(json!(decode_number(mantissa, exponent)))
+            }
+
             // STObject
             14 => {
                 let mut obj = Map::new();
@@ -431,6 +438,12 @@ impl Deserializer {
                     "currency": decode_currency(currency_bytes),
                     "issuer": encode_account_id(issuer_bytes)
                 }))
+            }
+
+            // Currency (20 bytes, same layout as Hash160)
+            26 => {
+                let bytes = reader.read_bytes(20)?;
+                Ok(json!(decode_currency(bytes)))
             }
 
             // XChainBridge - XRPL mainnet, may not be in Xahau
@@ -630,6 +643,72 @@ pub fn decode_currency(bytes: &[u8]) -> String {
     hex::encode_upper(bytes)
 }
 
+/// Decode an STNumber (type 9) into its canonical string representation.
+///
+/// The value equals `mantissa * 10^exponent`. This mirrors ripple-binary-codec /
+/// rippled `Number::to_string`: most values render as a plain decimal string, but
+/// values whose exponent falls outside the rendering window use `<mantissa>e<exp>`
+/// scientific notation (matching the reference implementation exactly).
+fn decode_number(mantissa: i64, exponent: i32) -> String {
+    // 10^18 - smallest normalized mantissa magnitude.
+    const MIN_MANTISSA: i128 = 1_000_000_000_000_000_000;
+    const MAX_EXPONENT: i64 = 32768;
+    // Canonical zero is encoded as mantissa = 0, exponent = i32::MIN.
+    const DEFAULT_VALUE_EXPONENT: i32 = i32::MIN;
+
+    if mantissa == 0 && exponent == DEFAULT_VALUE_EXPONENT {
+        return "0".to_string();
+    }
+
+    let is_negative = mantissa < 0;
+    let mut mantissa_abs = (mantissa as i128).abs();
+    let mut exp = exponent as i64;
+
+    // Mantissas above i64::MAX are shrunk during serialization; restore for rendering.
+    if mantissa_abs != 0 && mantissa_abs < MIN_MANTISSA {
+        mantissa_abs *= 10;
+        exp -= 1;
+    }
+
+    let range_log: i64 = 18;
+
+    // Scientific notation when exponent is outside [-(range_log + 10), -(range_log - 10)].
+    if exp != 0 && (exp < -(range_log + 10) || exp > -(range_log - 10)) {
+        let mut sci_exp = exp;
+        while mantissa_abs != 0 && mantissa_abs % 10 == 0 && sci_exp < MAX_EXPONENT {
+            mantissa_abs /= 10;
+            sci_exp += 1;
+        }
+        let sign = if is_negative { "-" } else { "" };
+        return format!("{}{}e{}", sign, mantissa_abs, sci_exp);
+    }
+
+    // Decimal rendering: position a wide zero-padded mantissa around the decimal point.
+    let pad_prefix = (range_log + 12) as usize; // 30
+    let pad_suffix = (range_log + 8) as usize; // 26
+    let mantissa_str = mantissa_abs.to_string();
+    let raw_value = format!(
+        "{}{}{}",
+        "0".repeat(pad_prefix),
+        mantissa_str,
+        "0".repeat(pad_suffix)
+    );
+    let offset = (exp + pad_prefix as i64 + range_log + 1) as usize; // exp + 49
+
+    let integer_part = {
+        let trimmed = raw_value[..offset].trim_start_matches('0');
+        if trimmed.is_empty() { "0" } else { trimmed }
+    };
+    let fraction_part = raw_value[offset..].trim_end_matches('0');
+
+    let sign = if is_negative { "-" } else { "" };
+    if fraction_part.is_empty() {
+        format!("{}{}", sign, integer_part)
+    } else {
+        format!("{}{}.{}", sign, integer_part, fraction_part)
+    }
+}
+
 /// Format IOU value as clean decimal string (matches ripple-binary-codec output)
 /// value = mantissa × 10^exponent
 fn format_iou_value(sign: &str, mantissa: u64, exponent: i32) -> String {
@@ -750,5 +829,67 @@ mod tests {
         let zeros = [0u8; 20];
         let encoded = encode_account_id(&zeros);
         assert_eq!(encoded, "rrrrrrrrrrrrrrrrrrrrrhoLvTp");
+    }
+
+    #[test]
+    fn test_decode_number_zero() {
+        // Canonical zero: mantissa = 0, exponent = i32::MIN
+        assert_eq!(decode_number(0, i32::MIN), "0");
+    }
+
+    #[test]
+    fn test_decode_number_integer() {
+        // "123" normalizes to mantissa = 123 * 10^16, exponent = -16
+        assert_eq!(decode_number(1_230_000_000_000_000_000, -16), "123");
+    }
+
+    #[test]
+    fn test_decode_number_decimal() {
+        // "1.5" normalizes to mantissa = 15 * 10^17, exponent = -18
+        assert_eq!(decode_number(1_500_000_000_000_000_000, -18), "1.5");
+    }
+
+    #[test]
+    fn test_decode_number_negative() {
+        // "-123" -> negative mantissa, same magnitude as the positive case
+        assert_eq!(decode_number(-1_230_000_000_000_000_000, -16), "-123");
+    }
+
+    #[test]
+    fn test_decode_number_scientific() {
+        // Exponent above the decimal window (-8) renders in scientific notation.
+        // 1e18 * 10^-7 = 1e11
+        assert_eq!(decode_number(1_000_000_000_000_000_000, -7), "1e11");
+    }
+
+    #[test]
+    fn test_decode_field_number_type9() {
+        let defs = Definitions::from_json("{}").unwrap();
+        // mantissa = 1_500_000_000_000_000_000 (BE), exponent = -18 (BE) -> "1.5"
+        let mut data = Vec::new();
+        data.extend_from_slice(&1_500_000_000_000_000_000u64.to_be_bytes());
+        data.extend_from_slice(&(-18i32).to_be_bytes());
+        let mut reader = BinaryReader::new(&data);
+        let value = Deserializer::decode_field(&mut reader, 9, 1, "Number", &defs).unwrap();
+        assert_eq!(value, json!("1.5"));
+    }
+
+    #[test]
+    fn test_decode_field_currency_type26() {
+        let defs = Definitions::from_json("{}").unwrap();
+        // Standard 3-char currency code in bytes 12-14
+        let mut usd = [0u8; 20];
+        usd[12] = b'U';
+        usd[13] = b'S';
+        usd[14] = b'D';
+        let mut reader = BinaryReader::new(&usd);
+        let value = Deserializer::decode_field(&mut reader, 26, 1, "BaseAsset", &defs).unwrap();
+        assert_eq!(value, json!("USD"));
+
+        // Native (all zeros) -> XAH
+        let native = [0u8; 20];
+        let mut reader = BinaryReader::new(&native);
+        let value = Deserializer::decode_field(&mut reader, 26, 1, "BaseAsset", &defs).unwrap();
+        assert_eq!(value, json!("XAH"));
     }
 }

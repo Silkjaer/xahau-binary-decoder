@@ -1,6 +1,6 @@
 {
   "name": "xahau-binary-decoder",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Fast binary decoder for Xahau ledger data",
   "main": "index.js",
   "types": "index.d.ts",
